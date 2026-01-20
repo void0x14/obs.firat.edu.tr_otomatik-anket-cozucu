@@ -421,40 +421,62 @@
 
         if (filledCount > 0) {
             DebugLog.info(`${filledCount} alan dolduruldu`);
-            showOverlay(`${filledCount} alan dolduruldu. KAYDET butonuna basın!`);
-            hookSaveButton();
+            showOverlay(`${filledCount} alan dolduruldu. KAYDET otomatik basılacak...`);
+            // 2 saniye bekle ve KAYDET'e otomatik bas
+            setTimeout(() => autoClickSaveButton(), 2000);
         } else {
             DebugLog.warn('Doldurulacak alan bulunamadı');
             showOverlay('Doldurulacak alan bulunamadı.', true);
         }
     }
 
-    function hookSaveButton() {
-        const buttons = Array.from(document.querySelectorAll('input[type="submit"], input[type="button"], button'))
+    async function autoClickSaveButton() {
+        const buttons = Array.from(document.querySelectorAll('input[type="submit"], input[type="button"], button, a'))
             .filter(btn => {
                 const txt = (btn.value || btn.innerText || '').toLowerCase();
-                return txt.includes("kaydet") || txt.includes("save") || txt.includes("gönder");
+                return txt.includes("kaydet") || txt.includes("save") || txt.includes("gönder") || txt.includes("onayla");
             })
             .filter(btn => btn.offsetParent !== null);
 
         const targetBtn = buttons[0];
 
-        if (targetBtn && !targetBtn.hasAttribute('data-hooked')) {
-            DebugLog.info(`Kaydet butonu bulundu: ${targetBtn.value || targetBtn.innerText}`);
+        if (targetBtn) {
+            DebugLog.info(`KAYDET butonuna OTOMATİK basılıyor: ${targetBtn.value || targetBtn.innerText}`);
+            showOverlay('KAYDET butonuna otomatik basılıyor...');
 
-            targetBtn.addEventListener('click', () => {
-                DebugLog.info('Kaydet tıklandı');
-                showOverlay('Kaydediliyor, sonraki anket aranacak...');
-                setTimeout(() => {
-                    window.location.reload();
-                }, 3000);
-            });
-
-            targetBtn.setAttribute('data-hooked', 'true');
+            // Butonu vurgula
             targetBtn.style.border = "4px solid #28a745";
             targetBtn.style.boxShadow = "0 0 15px rgba(40, 167, 69, 0.7)";
             targetBtn.style.backgroundColor = "#28a745";
             targetBtn.style.color = "white";
+
+            // 1 saniye bekle ve tıkla
+            await new Promise(r => setTimeout(r, 1000));
+
+            // Tıklama
+            const href = targetBtn.getAttribute('href');
+            const postBackParams = parsePostBackHref(href);
+
+            if (postBackParams) {
+                try {
+                    await triggerPostBack(postBackParams.eventTarget, postBackParams.eventArgument);
+                } catch (e) {
+                    targetBtn.click();
+                }
+            } else {
+                targetBtn.click();
+            }
+
+            DebugLog.info('KAYDET tıklandı, sayfa yenilenecek...');
+            showOverlay('Anket kaydedildi! Sonraki ankete geçiliyor...');
+
+            // 3 saniye bekle ve sayfayı yenile (sonraki ankete geçmek için)
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+        } else {
+            DebugLog.error('KAYDET butonu bulunamadı!');
+            showOverlay('KAYDET butonu bulunamadı!', true);
         }
     }
 
