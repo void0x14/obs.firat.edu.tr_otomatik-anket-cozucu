@@ -351,47 +351,53 @@
         Object.keys(groupedRadios).forEach(name => {
             const group = groupedRadios[name];
 
-            // Radio button değerlerini logla (debug için)
+            // Debug verisi: Mevcut değerleri logla
             const values = group.map(r => r.value);
-            DebugLog.info(`Radio grup [${name}] değerleri: ${values.join(', ')}`);
+            DebugLog.info(`Radio grup [${name}] analiz: ${values.join(', ')} | Hedef Puan: ${scoreValue}`);
 
-            // Öncelik sırası:
-            // 1. Tam değer eşleşmesi (örn: "5" == "5")
-            // 2. Sayısal karşılaştırma ile en yakın değer
-            // 3. Son seçenek (fallback)
+            // Seçim algoritması: Tam eşleşme veya parça eşleşmesi
+            let targetRadio = group.find(r => String(r.value) === String(scoreValue)) ||
+                group.find(r => r.value.includes(String(scoreValue)));
 
-            let targetRadio = null;
-
-            // Yöntem 1: Tam değer eşleşmesi
-            targetRadio = group.find(r => r.value === scoreValue) ||
-                group.find(r => r.value === scoreValue.toString());
-
-            // Yöntem 2: Sayısal olarak en yakın değeri bul
+            // Eğer hala bulunamadıysa sayısal olarak en yakınını bul (Likert scale fallback)
             if (!targetRadio) {
                 const numericScore = parseInt(scoreValue);
-                const sortedByValue = [...group].sort((a, b) => {
+                const sorted = [...group].sort((a, b) => {
                     const aVal = parseInt(a.value) || 0;
                     const bVal = parseInt(b.value) || 0;
                     return Math.abs(aVal - numericScore) - Math.abs(bVal - numericScore);
                 });
-                if (sortedByValue.length > 0) {
-                    targetRadio = sortedByValue[0];
-                    DebugLog.info(`En yakın değer seçildi: ${targetRadio.value} (hedef: ${scoreValue})`);
+                targetRadio = sorted[0];
+                DebugLog.info(`  En yakın değer seçildi: ${targetRadio?.value}`);
+            }
+
+            if (targetRadio) {
+                DebugLog.info(`✓ Seçim yapılıyor: ${targetRadio.value} (ID: ${targetRadio.id})`);
+
+                // ASP.NET radio'ları gizleyip label kullanıyor olabilir, label'ı bulup tıkla
+                const label = document.querySelector(`label[for="${targetRadio.id}"]`);
+
+                // Gerçek MouseEvent simülasyonu
+                const clickEvent = new MouseEvent('click', {
+                    view: window, bubbles: true, cancelable: true
+                });
+
+                if (label) {
+                    label.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    label.dispatchEvent(clickEvent);
+                    DebugLog.info('  Label tıklandı (UI güncellemesi için)');
                 }
-            }
 
-            // Yöntem 3: Fallback - son radio
-            if (!targetRadio) {
-                targetRadio = group[group.length - 1];
-            }
-
-            if (targetRadio && !targetRadio.checked) {
                 targetRadio.checked = true;
-                targetRadio.dispatchEvent(new Event('click', { bubbles: true }));
+                targetRadio.dispatchEvent(clickEvent);
+
+                // Form tetikleyici event'ler
+                targetRadio.dispatchEvent(new Event('input', { bubbles: true }));
                 targetRadio.dispatchEvent(new Event('change', { bubbles: true }));
+
                 filledCount++;
                 group.forEach(r => r.setAttribute(CONFIG.unfilledAttr, 'true'));
-                DebugLog.info(`✓ Radio seçildi [${name}]: değer=${targetRadio.value}`);
+                DebugLog.info(`  Radio başarıyla işaretlendi [${name}]`);
             }
         });
 
