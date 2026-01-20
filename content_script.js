@@ -352,52 +352,47 @@
 
             // 1. ADIM: Label metni üzerinden kesin eşleşme ara
             const scoreMap = {
-                "5": ["kesinlikle katılıyorum", "çok iyi", "tamamen katılıyorum", "5"],
-                "4": ["katılıyorum", "iyi", "4"],
-                "3": ["kararsızım", "orta", "ne katılıyorum ne katılmıyorum", "3"],
-                "2": ["katılmıyorum", "zayıf", "2"],
-                "1": ["kesinlikle katılmıyorum", "çok zayıf", "hiç katılmıyorum", "1"]
+                "5": { pos: ["kesinlikle katılıyorum", "çok iyi", "tamamen katılıyorum"], neg: ["katılmıyorum", "zayıf"] },
+                "4": { pos: ["katılıyorum", "iyi"], neg: ["katılmıyorum", "zayıf", "kesinlikle"] },
+                "3": { pos: ["kararsızım", "orta", "ne katılıyorum ne katılmıyorum"], neg: [] },
+                "2": { pos: ["katılmıyorum", "zayıf"], neg: ["kesinlikle", "iyi", "çok"] },
+                "1": { pos: ["kesinlikle katılmıyorum", "çok zayıf", "hiç katılmıyorum"], neg: [" katılıyorum", " iyi"] }
             };
 
-            const keywords = scoreMap[scoreValue] || [scoreValue];
+            const config = scoreMap[scoreValue] || { pos: [scoreValue], neg: [] };
 
             for (const radio of group) {
                 const label = document.querySelector(`label[for="${radio.id}"]`);
                 if (label) {
                     const labelText = (label.innerText || label.textContent || "").trim().toLowerCase();
 
-                    // "katılmıyorum" metni "katılıyorum" içerdiği için özel kontrol
-                    if (scoreValue === "4" || scoreValue === "5") {
-                        if (labelText.includes("katılmıyorum")) continue;
-                    }
-                    if (scoreValue === "2" || scoreValue === "1") {
-                        if (scoreValue === "2" && labelText.includes("kesinlikle")) continue;
-                    }
+                    // Pozitif kelime içermeli VE negatif kelime içermemeli
+                    const hasPos = config.pos.some(k => labelText.includes(k));
+                    const hasNeg = config.neg.some(k => labelText.includes(k));
 
-                    if (keywords.some(k => labelText === k || (labelText.includes(k) && k.length > 2))) {
+                    if (hasPos && !hasNeg) {
                         targetRadio = radio;
-                        DebugLog.info(`  Label üzerinden eşleşti: "${labelText}" -> Puan ${scoreValue}`);
+                        DebugLog.info(`  Label eşleşti: "${labelText}" -> Puan ${scoreValue}`);
                         break;
                     }
                 }
             }
 
-            // 2. ADIM: Label ile bulunamadıysa Value üzerinden tam eşleşme ara
+            // 2. ADIM: Value üzerinden tam eşleşme (örn: value="5")
             if (!targetRadio) {
-                targetRadio = group.find(r => String(r.value) === String(scoreValue)) ||
-                    group.find(r => r.id.endsWith(`_${scoreValue}`));
+                targetRadio = group.find(r => String(r.value) === String(scoreValue));
             }
 
-            // 3. ADIM: Fallback - Sayısal yakınlık
+            // 3. ADIM: Fallback - Sayısal yakınlık (ID veya Value içindeki rakam)
             if (!targetRadio) {
                 const numericScore = parseInt(scoreValue);
                 const sorted = [...group].sort((a, b) => {
-                    const aVal = parseInt(a.value.match(/\d+/)?.[0]) || 0;
-                    const bVal = parseInt(b.value.match(/\d+/)?.[0]) || 0;
+                    const aVal = parseInt(a.value.match(/\d+/)?.[0] || a.id.match(/\d+$/)?.[0]) || 0;
+                    const bVal = parseInt(b.value.match(/\d+/)?.[0] || b.id.match(/\d+$/)?.[0]) || 0;
                     return Math.abs(aVal - numericScore) - Math.abs(bVal - numericScore);
                 });
                 targetRadio = sorted[0];
-                DebugLog.info(`  Fallback (yakınlık): ${targetRadio?.value}`);
+                DebugLog.info(`  Fallback (yakınlık): ${targetRadio?.value || targetRadio?.id}`);
             }
 
             if (targetRadio) {
@@ -407,7 +402,6 @@
                 if (label) {
                     label.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     label.dispatchEvent(clickEvent);
-                    DebugLog.info('  Label tıklandı');
                 }
 
                 targetRadio.checked = true;
@@ -425,16 +419,37 @@
         const selects = document.querySelectorAll(`select:not([${CONFIG.unfilledAttr}])`);
         selects.forEach(s => {
             const options = Array.from(s.options);
-            const targetOption = options.find(o => o.value === scoreValue) ||
-                options.find(o => o.text.includes(scoreValue)) ||
-                options.find(o => o.text.toLowerCase().includes('kesinlikle')) ||
-                options[options.length - 1];
+            const scoreNum = parseInt(scoreValue);
+
+            // Seçim algoritması:
+            // 1. Value tam eşleşme
+            // 2. Metin içinde tam puan (örn: "5")
+            // 3. Likert metni eşleşmesi (Radio ile aynı mantık)
+            let targetOption = options.find(o => o.value === scoreValue);
+
+            if (!targetOption) {
+                const scoreMap = {
+                    "5": ["kesinlikle katılıyorum", "çok iyi", "5"],
+                    "4": ["katılıyorum", "iyi", "4"],
+                    "3": ["kararsızım", "orta", "3"],
+                    "2": ["katılmıyorum", "zayıf", "2"],
+                    "1": ["kesinlikle katılmıyorum", "çok zayıf", "1"]
+                };
+                const keywords = scoreMap[scoreValue] || [];
+
+                targetOption = options.find(o => {
+                    const txt = o.text.toLowerCase();
+                    if (scoreNum >= 4 && txt.includes("katılmıyorum")) return false;
+                    return keywords.some(k => txt.includes(k));
+                });
+            }
 
             if (targetOption && s.value !== targetOption.value) {
                 s.value = targetOption.value;
                 s.dispatchEvent(new Event('change', { bubbles: true }));
                 filledCount++;
                 s.setAttribute(CONFIG.unfilledAttr, 'true');
+                DebugLog.info(`✓ Select seçildi: ${targetOption.text}`);
             }
         });
 

@@ -1,0 +1,26 @@
+name: Create Release Asset
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Create Zip Asset
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Extension Zip
+        run: |
+          # Sadece gereken dosyaları paketle, gizli klasörleri (.git, .vscode vb.) hariç tut
+          zip -r obs_anket_otomasyonu.zip manifest.json content_script.js injected.js popup.html popup.js icons/ README.md CONTRIBUTING.md
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: obs_anket_otomasyonu.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
