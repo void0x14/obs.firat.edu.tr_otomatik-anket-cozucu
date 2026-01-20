@@ -526,17 +526,22 @@
         // Main World Bridge'i enjekte et
         await injectMainWorldScript();
 
-        // Kullanıcı ayarlarını al
+        // Kullanıcı ayarlarını al - Promise API kullan
         const isExtension = typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
 
         if (isExtension) {
-            chrome.storage.local.get(['surveyScore'], (result) => {
+            try {
+                // MV3 Promise-based API
+                const result = await chrome.storage.local.get(['surveyScore']);
                 const userScore = result.surveyScore || CONFIG.defaultHighScoreValue;
-                DebugLog.info(`Kullanıcı puanı: ${userScore}`);
+                DebugLog.info(`Kullanıcı puanı (storage'dan): ${userScore}`);
 
-                // Sayfa yüklenmesini bekle
+                // Sayfa yüklenmesini bekle ve state machine başlat
                 setTimeout(() => runStateMachine(userScore), CONFIG.navigationDelay);
-            });
+            } catch (error) {
+                DebugLog.error('Storage okuma hatası', error.message);
+                setTimeout(() => runStateMachine(CONFIG.defaultHighScoreValue), CONFIG.navigationDelay);
+            }
         } else {
             DebugLog.warn('Extension context dışında çalışıyor');
             setTimeout(() => runStateMachine(CONFIG.defaultHighScoreValue), CONFIG.navigationDelay);

@@ -1,4 +1,4 @@
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const scoreSelect = document.getElementById('scoreSelect');
     const saveMsg = document.getElementById('saveMsg');
     const openObsBtn = document.getElementById('openObs');
@@ -14,69 +14,65 @@ document.addEventListener('DOMContentLoaded', () => {
         warning.style.cssText = "color: #856404; background-color: #fff3cd; border: 1px solid #ffeeba; padding: 10px; margin-bottom: 10px; font-size: 12px; border-radius: 4px;";
         warning.innerHTML = "⚠️ <b>Hata:</b> Eklenti olarak yüklenmedi! Lütfen <code>chrome://extensions</code> üzerinden 'Paketlenmemiş öğe yükle' ile klasörü seçin.";
         document.body.prepend(warning);
+        return;
     }
 
-    // Load saved preference
-    if (isExtension) {
-        chrome.storage.local.get(['surveyScore'], (result) => {
-            if (result.surveyScore) {
-                scoreSelect.value = result.surveyScore;
-            }
-        });
-
-        // Update log count
-        updateLogCount();
-    }
-
-    // Save preference on change
-    scoreSelect.addEventListener('change', () => {
-        const val = scoreSelect.value;
-        if (isExtension) {
-            chrome.storage.local.set({ surveyScore: val }, () => {
-                saveMsg.style.display = 'block';
-                setTimeout(() => {
-                    saveMsg.style.display = 'none';
-                }, 2000);
-            });
+    // Load saved preference - Promise API (MV3)
+    try {
+        const result = await chrome.storage.local.get(['surveyScore']);
+        if (result.surveyScore) {
+            scoreSelect.value = result.surveyScore;
+            console.log('[Popup] Loaded score from storage:', result.surveyScore);
         } else {
-            localStorage.setItem('surveyScore', val);
-            saveMsg.innerText = "✓ Ayarlar (Yerel) kaydedildi.";
+            console.log('[Popup] No saved score, using default: 5');
+        }
+    } catch (error) {
+        console.error('[Popup] Error loading score:', error);
+    }
+
+    // Update log count
+    updateLogCount();
+
+    // Save preference on change - Promise API (MV3)
+    scoreSelect.addEventListener('change', async () => {
+        const val = scoreSelect.value;
+        try {
+            await chrome.storage.local.set({ surveyScore: val });
+            console.log('[Popup] Saved score to storage:', val);
+
             saveMsg.style.display = 'block';
+            saveMsg.textContent = `✓ Puan ${val} olarak kaydedildi.`;
             setTimeout(() => {
                 saveMsg.style.display = 'none';
             }, 2000);
+        } catch (error) {
+            console.error('[Popup] Error saving score:', error);
+            saveMsg.style.display = 'block';
+            saveMsg.textContent = '❌ Kaydetme hatası!';
+            saveMsg.style.color = '#dc3545';
         }
     });
 
     // Open OBS
     openObsBtn.addEventListener('click', () => {
         const checkUrl = 'https://obs.firat.edu.tr/oibs/std/';
-
-        if (isExtension) {
-            chrome.tabs.create({ url: checkUrl }, (tab) => {
-                setTimeout(() => {
-                    chrome.tabs.get(tab.id, (updatedTab) => {
-                        if (updatedTab.url.includes('login') || updatedTab.url.includes('giris')) {
-                            chrome.tabs.update(tab.id, {
-                                url: 'https://obs.firat.edu.tr/oibs/ogrenci/login.aspx'
-                            });
-                        }
-                    });
-                }, 2000);
-            });
-        } else {
-            window.open(checkUrl, '_blank');
-        }
+        chrome.tabs.create({ url: checkUrl }, (tab) => {
+            setTimeout(() => {
+                chrome.tabs.get(tab.id, (updatedTab) => {
+                    if (updatedTab && (updatedTab.url.includes('login') || updatedTab.url.includes('giris'))) {
+                        chrome.tabs.update(tab.id, {
+                            url: 'https://obs.firat.edu.tr/oibs/ogrenci/login.aspx'
+                        });
+                    }
+                });
+            }, 2000);
+        });
     });
 
     // Download debug logs
-    downloadLogsBtn.addEventListener('click', () => {
-        if (!isExtension) {
-            alert('Eklenti bağlamında değilsiniz!');
-            return;
-        }
-
-        chrome.storage.local.get(['debug_logs'], (result) => {
+    downloadLogsBtn.addEventListener('click', async () => {
+        try {
+            const result = await chrome.storage.local.get(['debug_logs']);
             const logs = result.debug_logs || [];
 
             if (logs.length === 0) {
@@ -100,31 +96,33 @@ document.addEventListener('DOMContentLoaded', () => {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-        });
+        } catch (error) {
+            console.error('[Popup] Error downloading logs:', error);
+            alert('Log indirme hatası: ' + error.message);
+        }
     });
 
     // Clear logs
-    clearLogsBtn.addEventListener('click', () => {
-        if (!isExtension) {
-            alert('Eklenti bağlamında değilsiniz!');
-            return;
-        }
-
+    clearLogsBtn.addEventListener('click', async () => {
         if (confirm('Tüm debug loglarını silmek istediğinize emin misiniz?')) {
-            chrome.storage.local.set({ debug_logs: [] }, () => {
+            try {
+                await chrome.storage.local.set({ debug_logs: [] });
                 updateLogCount();
                 alert('Loglar temizlendi.');
-            });
+            } catch (error) {
+                console.error('[Popup] Error clearing logs:', error);
+            }
         }
     });
 
     // Update log count display
-    function updateLogCount() {
-        if (!isExtension) return;
-
-        chrome.storage.local.get(['debug_logs'], (result) => {
+    async function updateLogCount() {
+        try {
+            const result = await chrome.storage.local.get(['debug_logs']);
             const logs = result.debug_logs || [];
             logCountEl.textContent = `📊 ${logs.length} log kaydı mevcut`;
-        });
+        } catch (error) {
+            logCountEl.textContent = '📊 Log sayısı alınamadı';
+        }
     }
 });
