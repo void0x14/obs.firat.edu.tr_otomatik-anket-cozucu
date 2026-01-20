@@ -1,26 +1,153 @@
 /**
- * OBS ANKET OTOMASYONU v2.1 - FIXED
+ * OBS ANKET OTOMASYONU v3.0 - CSP BYPASS & NAVIGATION ENGINE
  * 
- * Sorunlar düzeltildi:
- * - Sadece <a> taglarındaki "Zorunlu Anket" linklerine tıkla
- * - Modal killer spam kaldırıldı
- * - Daha spesifik element seçimi
+ * Mimari:
+ * 1. Content Script (Isolated World) - Element tespiti ve UI
+ * 2. Injected Script (Main World) - __doPostBack çağrıları
+ * 3. postMessage Bridge - İki dünya arası iletişim
  */
 
 (function () {
     'use strict';
 
+    // ==================== CONFIG ====================
     const CONFIG = {
         defaultHighScoreValue: "5",
-        autoFillDelay: 2500,
-        unfilledAttr: 'data-anket-processed',
-        clickDelay: 1500
+        autoFillDelay: 2000,
+        navigationDelay: 1500,
+        retryDelay: 5000,
+        maxRetries: 3,
+        unfilledAttr: 'data-anket-processed'
     };
 
-    function log(msg) {
-        console.log('[OBS-Anket]', msg);
+    // ==================== DEBUG LOG SYSTEM ====================
+    const DebugLog = {
+        logs: [],
+
+        add(level, message, data = null) {
+            const entry = {
+                timestamp: new Date().toISOString(),
+                level,
+                message,
+                data,
+                url: window.location.href
+            };
+            this.logs.push(entry);
+
+            // Console'a da yaz
+            const prefix = '[OBS-Anket]';
+            if (level === 'error') {
+                console.error(prefix, message, data || '');
+            } else if (level === 'warn') {
+                console.warn(prefix, message, data || '');
+            } else {
+                console.log(prefix, message, data || '');
+            }
+
+            // Chrome storage'a kaydet
+            this.saveToStorage();
+        },
+
+        info(msg, data) { this.add('info', msg, data); },
+        warn(msg, data) { this.add('warn', msg, data); },
+        error(msg, data) { this.add('error', msg, data); },
+
+        saveToStorage() {
+            if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+                chrome.storage.local.set({ debug_logs: this.logs.slice(-500) }); // Son 500 log
+            }
+        }
+    };
+
+    // ==================== MAIN WORLD BRIDGE ====================
+    let bridgeReady = false;
+
+    function injectMainWorldScript() {
+        return new Promise((resolve) => {
+            // Bridge zaten hazırsa bekle
+            if (bridgeReady) {
+                resolve();
+                return;
+            }
+
+            // Injected.js'i sayfaya ekle
+            const script = document.createElement('script');
+            script.src = chrome.runtime.getURL('injected.js');
+            script.onload = function () {
+                this.remove(); // Temizlik
+            };
+            (document.head || document.documentElement).appendChild(script);
+
+            // Bridge hazır mesajını bekle
+            const handler = (event) => {
+                if (event.data && event.data.type === 'OBS_BRIDGE_READY') {
+                    bridgeReady = true;
+                    window.removeEventListener('message', handler);
+                    DebugLog.info('Main World Bridge hazır');
+                    resolve();
+                }
+            };
+            window.addEventListener('message', handler);
+
+            // 2 saniye timeout
+            setTimeout(() => {
+                if (!bridgeReady) {
+                    DebugLog.warn('Bridge timeout, devam ediliyor');
+                    resolve();
+                }
+            }, 2000);
+        });
     }
 
+    function triggerPostBack(eventTarget, eventArgument) {
+        return new Promise((resolve, reject) => {
+            DebugLog.info(`PostBack tetikleniyor: ${eventTarget}`);
+
+            const handler = (event) => {
+                if (event.data && event.data.type === 'OBS_POSTBACK_RESPONSE') {
+                    window.removeEventListener('message', handler);
+                    if (event.data.success) {
+                        DebugLog.info(`PostBack başarılı (${event.data.method})`);
+                        resolve(event.data);
+                    } else {
+                        DebugLog.error('PostBack başarısız', event.data.error);
+                        reject(new Error(event.data.error));
+                    }
+                }
+            };
+            window.addEventListener('message', handler);
+
+            // Main World'e mesaj gönder
+            window.postMessage({
+                type: 'OBS_POSTBACK_REQUEST',
+                eventTarget,
+                eventArgument
+            }, '*');
+
+            // 5 saniye timeout
+            setTimeout(() => {
+                window.removeEventListener('message', handler);
+                reject(new Error('PostBack timeout'));
+            }, 5000);
+        });
+    }
+
+    // ==================== LINK PARSER ====================
+    function parsePostBackHref(href) {
+        if (!href) return null;
+
+        // javascript:__doPostBack('ctl00$ContentPlaceHolder1$gvDersler','Select$2')
+        const match = href.match(/__doPostBack\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]*)['"]\s*\)/);
+        if (match) {
+            return {
+                eventTarget: match[1],
+                eventArgument: match[2]
+            };
+        }
+        return null;
+    }
+
+    // ==================== UI OVERLAY ====================
     function showOverlay(message, isError = false) {
         const id = 'anket-solver-overlay';
         let overlay = document.getElementById(id);
@@ -32,6 +159,7 @@
                 border-radius: 12px; font-weight: 600; z-index: 2147483647;
                 box-shadow: 0 8px 32px rgba(0,0,0,0.4);
                 font-family: system-ui, sans-serif; max-width: 400px;
+                transition: opacity 0.3s;
             `;
             document.body.appendChild(overlay);
         }
@@ -42,91 +170,172 @@
         setTimeout(() => { if (overlay) overlay.style.opacity = '0'; }, 5000);
     }
 
-    /**
-     * SADECE <a> taglarında "Zorunlu Anket" ara
-     */
-    function findZorunluAnketLinks() {
-        log("Zorunlu Anket <a> linkleri aranıyor...");
+    // ==================== NAVIGATION ENGINE ====================
+    const NavigationState = {
+        UNKNOWN: 'UNKNOWN',
+        MAIN_PAGE: 'MAIN_PAGE',
+        GRADE_LIST: 'GRADE_LIST',
+        SURVEY_FORM: 'SURVEY_FORM'
+    };
 
-        // SADECE <a> tagları - tablo veya div değil!
+    function detectCurrentState() {
+        const url = window.location.href.toLowerCase();
+        const bodyText = (document.body.innerText || '').toLowerCase();
+
+        // Form tespiti - radio butonları veya select'ler varsa
+        const hasRadios = document.querySelectorAll('input[type="radio"]').length > 0;
+        const hasFormSelects = document.querySelectorAll('select').length > 3; // En az 3 select varsa form
+
+        if (hasRadios || hasFormSelects) {
+            // Anket soruları içeriyor mu kontrol et
+            if (bodyText.includes('kesinlikle') || bodyText.includes('katılıyorum') ||
+                bodyText.includes('dersin') || bodyText.includes('öğretim')) {
+                DebugLog.info('State: SURVEY_FORM');
+                return NavigationState.SURVEY_FORM;
+            }
+        }
+
+        // Zorunlu anket linkleri varsa not listesindeyiz
+        const zorunluLinks = findZorunluAnketLinks();
+        if (zorunluLinks.length > 0) {
+            DebugLog.info('State: GRADE_LIST', { linkCount: zorunluLinks.length });
+            return NavigationState.GRADE_LIST;
+        }
+
+        // Not listesi sayfasında mıyız?
+        if (url.includes('not_listesi') || bodyText.includes('not listesi')) {
+            DebugLog.info('State: GRADE_LIST (URL based)');
+            return NavigationState.GRADE_LIST;
+        }
+
+        // Ana sayfa veya duyuru sayfası
+        if (url.includes('index.aspx') || url.includes('duyuru')) {
+            DebugLog.info('State: MAIN_PAGE');
+            return NavigationState.MAIN_PAGE;
+        }
+
+        DebugLog.info('State: UNKNOWN');
+        return NavigationState.UNKNOWN;
+    }
+
+    // ==================== ZORUNLU ANKET DETECTION ====================
+    function findZorunluAnketLinks() {
         const allLinks = document.querySelectorAll('a');
         const zorunluLinks = [];
 
         for (const link of allLinks) {
             const text = (link.innerText || link.textContent || '').trim().toLowerCase();
+            const href = link.getAttribute('href') || '';
 
-            // Tam olarak "zorunlu anket" içeren linkler
-            if (text.includes('zorunlu anket') || text === 'zorunlu anket') {
-                // Görünür olmalı
+            if ((text.includes('zorunlu') && text.includes('anket')) || text === 'zorunlu anket') {
                 if (link.offsetParent !== null && !link.hasAttribute(CONFIG.unfilledAttr)) {
-                    zorunluLinks.push(link);
-                    log(`Bulundu: "${link.innerText.trim()}"`);
+                    zorunluLinks.push({
+                        element: link,
+                        text: link.innerText.trim(),
+                        href: href,
+                        postBackParams: parsePostBackHref(href)
+                    });
                 }
             }
         }
 
-        log(`${zorunluLinks.length} zorunlu anket linki bulundu`);
         return zorunluLinks;
     }
 
-    /**
-     * İlk zorunlu ankete tıkla
-     */
-    function clickFirstZorunluAnket() {
+    // ==================== MENU NAVIGATION ====================
+    async function navigateToGradeList() {
+        DebugLog.info('Not Listesi sayfasına navigasyon başlıyor...');
+        showOverlay('Not Listesi sayfasına gidiliyor...');
+
+        // "Ders ve Dönem İşlemleri" veya "Not Listesi" linkini bul
+        const allLinks = document.querySelectorAll('a, span[onclick], div[onclick]');
+
+        for (const element of allLinks) {
+            const text = (element.innerText || element.textContent || '').toLowerCase();
+            const href = element.getAttribute('href') || '';
+            const onclick = element.getAttribute('onclick') || '';
+
+            // "Not Listesi" linkini ara
+            if (text.includes('not listesi') || text.includes('not listem')) {
+                DebugLog.info('Not Listesi linki bulundu', { text: element.innerText });
+
+                const postBackParams = parsePostBackHref(href) || parsePostBackHref(onclick);
+
+                if (postBackParams) {
+                    try {
+                        await triggerPostBack(postBackParams.eventTarget, postBackParams.eventArgument);
+                        return true;
+                    } catch (error) {
+                        DebugLog.error('PostBack hatası', error.message);
+                    }
+                } else if (href && !href.startsWith('javascript:')) {
+                    // Normal link - tıkla
+                    element.click();
+                    return true;
+                } else {
+                    // PostBack parse edilemedi ama tıklamayı dene
+                    element.click();
+                    return true;
+                }
+            }
+        }
+
+        // "Ders ve Dönem İşlemleri" menüsünü bul ve aç
+        for (const element of allLinks) {
+            const text = (element.innerText || element.textContent || '').toLowerCase();
+
+            if (text.includes('ders') && text.includes('dönem')) {
+                DebugLog.info('Ders ve Dönem İşlemleri menüsü bulundu');
+                element.click();
+
+                // Menü açılmasını bekle ve tekrar "Not Listesi" ara
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                return navigateToGradeList(); // Recursive call
+            }
+        }
+
+        DebugLog.warn('Navigasyon linki bulunamadı');
+        showOverlay('Menü bulunamadı! Manuel olarak Not Listesi sayfasına gidin.', true);
+        return false;
+    }
+
+    // ==================== ZORUNLU ANKET CLICK ====================
+    async function clickFirstZorunluAnket() {
         const links = findZorunluAnketLinks();
 
-        if (links.length > 0) {
-            const firstLink = links[0];
-            showOverlay(`${links.length} zorunlu anket bulundu. İlki açılıyor...`);
-            log(`Tıklanıyor: "${firstLink.innerText.trim()}"`);
-
-            firstLink.setAttribute(CONFIG.unfilledAttr, 'clicked');
-
-            // 1 saniye bekle ve tıkla
-            setTimeout(() => {
-                firstLink.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                setTimeout(() => {
-                    firstLink.click();
-                    log("Link tıklandı!");
-                }, 500);
-            }, 500);
-
-            return true;
-        } else {
-            log("Zorunlu anket linki bulunamadı");
-            showOverlay("Zorunlu anket bulunamadı veya hepsi tamamlandı!", false);
+        if (links.length === 0) {
+            DebugLog.info('Zorunlu anket bulunamadı veya hepsi tamamlandı');
+            showOverlay('Tüm zorunlu anketler tamamlandı! 🎉');
             return false;
         }
+
+        const firstLink = links[0];
+        DebugLog.info(`${links.length} zorunlu anket bulundu, ilki tıklanıyor`, { text: firstLink.text });
+        showOverlay(`${links.length} zorunlu anket bulundu. İlki açılıyor...`);
+
+        firstLink.element.setAttribute(CONFIG.unfilledAttr, 'clicked');
+
+        if (firstLink.postBackParams) {
+            // PostBack ile aç
+            try {
+                await triggerPostBack(firstLink.postBackParams.eventTarget, firstLink.postBackParams.eventArgument);
+                return true;
+            } catch (error) {
+                DebugLog.error('Anket açma hatası', error.message);
+                // Fallback: normal click
+                firstLink.element.click();
+                return true;
+            }
+        } else {
+            // Normal click
+            firstLink.element.click();
+            return true;
+        }
     }
 
-    /**
-     * Sayfa türünü tespit et
-     */
-    function detectPageType() {
-        const bodyText = document.body.innerText.toLowerCase();
-        const hasRadios = document.querySelectorAll('input[type="radio"]').length > 0;
-        const zorunluLinks = findZorunluAnketLinks();
-
-        if (hasRadios) {
-            return 'SURVEY_FORM';
-        }
-
-        if (zorunluLinks.length > 0) {
-            return 'GRADE_LIST';
-        }
-
-        if (bodyText.includes('not listesi')) {
-            return 'GRADE_LIST';
-        }
-
-        return 'UNKNOWN';
-    }
-
-    /**
-     * Anket formunu doldur
-     */
+    // ==================== FORM FILLING ====================
     function fillSurveyForm(scoreValue) {
-        log(`Form doldurma başlıyor (puan: ${scoreValue})...`);
+        DebugLog.info(`Form doldurma başlıyor (puan: ${scoreValue})`);
         let filledCount = 0;
 
         // RADIO BUTTONS
@@ -137,7 +346,7 @@
             groupedRadios[r.name].push(r);
         });
 
-        log(`${Object.keys(groupedRadios).length} radio grubu bulundu`);
+        DebugLog.info(`${Object.keys(groupedRadios).length} radio grubu bulundu`);
 
         Object.keys(groupedRadios).forEach(name => {
             const group = groupedRadios[name];
@@ -161,6 +370,7 @@
             const options = Array.from(s.options);
             const targetOption = options.find(o => o.value === scoreValue) ||
                 options.find(o => o.text.includes(scoreValue)) ||
+                options.find(o => o.text.toLowerCase().includes('kesinlikle')) ||
                 options[options.length - 1];
 
             if (targetOption && s.value !== targetOption.value) {
@@ -185,7 +395,6 @@
             for (let i = 0; i < cells.length; i++) {
                 const cell = cells[i];
                 if (cell.contains(input)) break;
-
                 const numbers = (cell.innerText || "").match(/(\d+)/g);
                 if (numbers) leftValue = numbers[numbers.length - 1];
             }
@@ -197,7 +406,7 @@
             input.dispatchEvent(new Event('change', { bubbles: true }));
             input.setAttribute(CONFIG.unfilledAttr, 'true');
             filledCount++;
-            log(`Text input: "${leftValue}"`);
+            DebugLog.info(`Text input dolduruldu: ${leftValue}`);
         });
 
         // TEXTAREAS
@@ -211,12 +420,12 @@
         });
 
         if (filledCount > 0) {
-            log(`${filledCount} alan dolduruldu`);
+            DebugLog.info(`${filledCount} alan dolduruldu`);
             showOverlay(`${filledCount} alan dolduruldu. KAYDET butonuna basın!`);
             hookSaveButton();
         } else {
-            log("Doldurulacak alan yok");
-            showOverlay("Doldurulacak alan bulunamadı.", true);
+            DebugLog.warn('Doldurulacak alan bulunamadı');
+            showOverlay('Doldurulacak alan bulunamadı.', true);
         }
     }
 
@@ -231,13 +440,12 @@
         const targetBtn = buttons[0];
 
         if (targetBtn && !targetBtn.hasAttribute('data-hooked')) {
-            log(`Kaydet butonu bulundu: "${targetBtn.value || targetBtn.innerText}"`);
+            DebugLog.info(`Kaydet butonu bulundu: ${targetBtn.value || targetBtn.innerText}`);
 
             targetBtn.addEventListener('click', () => {
-                log("Kaydet tıklandı, 3sn sonra sonraki anket aranacak...");
-                showOverlay("Kaydediliyor...");
+                DebugLog.info('Kaydet tıklandı');
+                showOverlay('Kaydediliyor, sonraki anket aranacak...');
                 setTimeout(() => {
-                    // Sayfayı yenile ve sonraki anketi bul
                     window.location.reload();
                 }, 3000);
             });
@@ -250,57 +458,74 @@
         }
     }
 
-    /**
-     * Ana fonksiyon
-     */
-    function init() {
-        log(`Aktif. URL: ${window.location.href}`);
+    // ==================== STATE MACHINE ====================
+    async function runStateMachine(userScore) {
+        const state = detectCurrentState();
 
-        const isExtension = typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+        switch (state) {
+            case NavigationState.MAIN_PAGE:
+                showOverlay('Ana sayfa tespit edildi, Not Listesine gidiliyor...');
+                await new Promise(r => setTimeout(r, CONFIG.navigationDelay));
+                await navigateToGradeList();
+                break;
 
-        const startLogic = (userScore) => {
-            log(`Puan: ${userScore}`);
+            case NavigationState.GRADE_LIST:
+                showOverlay('Not listesi tespit edildi, zorunlu anketler aranıyor...');
+                await new Promise(r => setTimeout(r, CONFIG.navigationDelay));
+                await clickFirstZorunluAnket();
+                break;
 
-            // 2 saniye bekle, sayfa yüklensin
-            setTimeout(() => {
-                const pageType = detectPageType();
-                log(`Sayfa: ${pageType}`);
+            case NavigationState.SURVEY_FORM:
+                showOverlay('Anket formu tespit edildi, doldurma başlıyor...');
+                await new Promise(r => setTimeout(r, CONFIG.autoFillDelay));
+                fillSurveyForm(userScore);
+                break;
 
-                if (pageType === 'SURVEY_FORM') {
-                    log("Form tespit edildi");
-                    showOverlay("Anket formu doldurulacak...");
-                    setTimeout(() => fillSurveyForm(userScore), CONFIG.autoFillDelay);
-                } else if (pageType === 'GRADE_LIST') {
-                    log("Not listesi tespit edildi");
-                    showOverlay("Zorunlu anketler aranıyor...");
-                    setTimeout(clickFirstZorunluAnket, CONFIG.clickDelay);
+            case NavigationState.UNKNOWN:
+            default:
+                showOverlay('Sayfa analiz ediliyor...');
+                // 3 saniye sonra tekrar dene
+                await new Promise(r => setTimeout(r, 3000));
+                const retryState = detectCurrentState();
+                if (retryState !== NavigationState.UNKNOWN) {
+                    await runStateMachine(userScore);
                 } else {
-                    log("Bilinmeyen sayfa, 3sn sonra tekrar deneyecek");
-                    showOverlay("Sayfa analiz ediliyor...");
-                    setTimeout(() => {
-                        const retry = detectPageType();
-                        if (retry === 'SURVEY_FORM') fillSurveyForm(userScore);
-                        else if (retry === 'GRADE_LIST') clickFirstZorunluAnket();
-                        else showOverlay("Sayfa türü tespit edilemedi", true);
-                    }, 3000);
+                    DebugLog.warn('Sayfa türü tespit edilemedi');
+                    showOverlay('Sayfa türü tespit edilemedi. Manuel işlem gerekebilir.', true);
                 }
-            }, 2000);
-        };
-
-        if (isExtension) {
-            chrome.storage.local.get(['surveyScore'], (result) => {
-                startLogic(result.surveyScore || CONFIG.defaultHighScoreValue);
-            });
-        } else {
-            startLogic(CONFIG.defaultHighScoreValue);
         }
     }
 
-    // Başlat
-    if (document.body) {
-        init();
-    } else {
+    // ==================== INIT ====================
+    async function init() {
+        DebugLog.info(`Extension başlatıldı. URL: ${window.location.href}`);
+        DebugLog.info(`Frame: ${window.self === window.top ? 'TOP' : 'IFRAME'}`);
+
+        // Main World Bridge'i enjekte et
+        await injectMainWorldScript();
+
+        // Kullanıcı ayarlarını al
+        const isExtension = typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+
+        if (isExtension) {
+            chrome.storage.local.get(['surveyScore'], (result) => {
+                const userScore = result.surveyScore || CONFIG.defaultHighScoreValue;
+                DebugLog.info(`Kullanıcı puanı: ${userScore}`);
+
+                // Sayfa yüklenmesini bekle
+                setTimeout(() => runStateMachine(userScore), CONFIG.navigationDelay);
+            });
+        } else {
+            DebugLog.warn('Extension context dışında çalışıyor');
+            setTimeout(() => runStateMachine(CONFIG.defaultHighScoreValue), CONFIG.navigationDelay);
+        }
+    }
+
+    // ==================== BOOTSTRAP ====================
+    if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
     }
 
 })();
