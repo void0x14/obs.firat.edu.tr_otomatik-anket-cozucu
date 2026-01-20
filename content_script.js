@@ -1,0 +1,191 @@
+/**
+ * ARCHITECTURE: NAVIGATION & FLOW ENGINE (HARDENED)
+ * 1. Detects if we are in the "Survey List" or "Survey Form".
+ * 2. If List: Finds first unfilled survey and enters.
+ * 3. If Form: Fills values and monitors for "Save" completion.
+ * 4. Post-Save: Triggers parent menu to refresh the list (Exit-Reenter logic).
+ */
+
+(function () {
+    'use strict';
+
+    const CONFIG = {
+        defaultHighScoreValue: "5",
+        autoFillDelay: 1500,
+        unfilledAttr: 'data-anket-processed',
+        refreshInterval: 2000
+    };
+
+    /**
+     * Notification Overlay
+     */
+    function showOverlay(message, isError = false) {
+        const id = 'anket-solver-overlay';
+        let overlay = document.getElementById(id);
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = id;
+            overlay.style.cssText = `
+                position: fixed; top: 20px; right: 20px; padding: 15px 25px;
+                border-radius: 12px; font-weight: 600; z-index: 2147483647;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.4); transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                font-family: 'Inter', system-ui, -apple-system, sans-serif;
+                backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1);
+            `;
+            document.body.appendChild(overlay);
+        }
+        overlay.style.backgroundColor = isError ? 'rgba(220, 53, 69, 0.95)' : 'rgba(40, 167, 69, 0.95)';
+        overlay.style.color = 'white';
+        overlay.innerHTML = `🚀 ${message}`;
+        overlay.style.opacity = '1';
+        overlay.style.transform = 'translateY(0)';
+
+        setTimeout(() => {
+            if (overlay) {
+                overlay.style.opacity = '0';
+                overlay.style.transform = 'translateY(-20px)';
+            }
+        }, 4000);
+    }
+
+    /**
+     * Refreshes the Survey List via Parent Window (The "Exit-Reenter" Logic)
+     */
+    function triggerListRefresh() {
+        console.log("[System] Triggering list refresh via parent...");
+        try {
+            // Find the "Anketler" menu item in the top frame
+            const menuLinks = window.top.document.querySelectorAll('a[onclick*="Anketler"], .nav-link p');
+            let target = null;
+            menuLinks.forEach(link => {
+                if (link.innerText.includes("Anketler")) {
+                    target = link.closest('a') || link;
+                }
+            });
+
+            if (target) {
+                showOverlay("Anket kaydedildi. Liste yenileniyor...");
+                target.click(); // Trigger the menu click
+            } else {
+                // Fallback: Just reload the frame if menu link not found
+                window.location.reload();
+            }
+        } catch (e) {
+            console.error("[System] Parent access failed:", e);
+            window.location.reload();
+        }
+    }
+
+    /**
+     * Detects the Survey List and auto-activates an unfilled survey
+     */
+    function handleSurveyList() {
+        // Look for buttons like "Anket Doldur" or descriptive links
+        const unfilledButtons = Array.from(document.querySelectorAll('a, button, input[type="button"]'))
+            .filter(el => (el.innerText || el.value || "").toLowerCase().includes("anket doldur") ||
+                (el.className && el.className.includes("btn-primary")));
+
+        if (unfilledButtons.length > 0) {
+            showOverlay("Sıradaki anket açılıyor...");
+            unfilledButtons[0].click();
+        }
+    }
+
+    /**
+     * Main Init
+     */
+    function init() {
+        // Only run in frames (survey is always in an iframe in OBS)
+        if (window === window.top) return;
+
+        console.log("[System] Content Script Active. Fetching preferences...");
+
+        // Get user preference for score (default to 5)
+        chrome.storage.local.get(['surveyScore'], (result) => {
+            const userScore = result.surveyScore || CONFIG.defaultHighScoreValue;
+            console.log(`[System] Preferred Score: ${userScore}`);
+
+            const isForm = !!document.querySelector('input[type="radio"], select, table tr td input');
+
+            if (isForm) {
+                setTimeout(() => fillSurveyFormWithScore(userScore), CONFIG.autoFillDelay);
+            } else {
+                setTimeout(handleSurveyList, CONFIG.autoFillDelay);
+            }
+
+            const observer = new MutationObserver(() => {
+                if (isForm) fillSurveyFormWithScore(userScore);
+                else handleSurveyList();
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    }
+
+    /**
+     * Updated fill logic with dynamic score
+     */
+    function fillSurveyFormWithScore(scoreValue) {
+        let filledCount = 0;
+
+        // Radios
+        document.querySelectorAll(`input[type="radio"]:not([${CONFIG.unfilledAttr}])`).forEach(r => {
+            if (r.value === scoreValue) {
+                r.checked = true;
+                r.dispatchEvent(new Event('change', { bubbles: true }));
+                filledCount++;
+            }
+            r.setAttribute(CONFIG.unfilledAttr, 'true');
+        });
+
+        // Selects
+        document.querySelectorAll(`select:not([${CONFIG.unfilledAttr}])`).forEach(s => {
+            const targetOption = Array.from(s.options).find(o => o.value === scoreValue);
+            if (targetOption) {
+                s.value = targetOption.value;
+            } else if (s.options.length > 1) {
+                s.selectedIndex = s.options.length - 1;
+            }
+            s.dispatchEvent(new Event('change', { bubbles: true }));
+            s.setAttribute(CONFIG.unfilledAttr, 'true');
+            filledCount++;
+        });
+
+        // AKTS Logic stays same
+        document.querySelectorAll('tr').forEach(row => {
+            if (row.hasAttribute(CONFIG.unfilledAttr)) return;
+            const cells = row.cells;
+            if (cells && cells.length >= 2) {
+                const text = cells[0].innerText || "";
+                const hoursMatch = text.match(/Mevcut İş Yükü\s+\(Saat\).+?(\d+)/i) || text.match(/(\d+)\s+Saat/i);
+                const input = cells[cells.length - 1].querySelector('input[type="text"], input[type="number"]');
+                if (hoursMatch && input) {
+                    input.value = hoursMatch[1];
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                    row.setAttribute(CONFIG.unfilledAttr, 'true');
+                    filledCount++;
+                }
+            }
+        });
+
+        if (filledCount > 0) {
+            showOverlay(`${filledCount} alan (${scoreValue} puanı ile) dolduruldu.`);
+            hookSaveButton();
+        }
+    }
+
+    function hookSaveButton() {
+        const saveBtn = document.querySelector('input[type="submit"][value*="Kaydet"], button[id*="btnKaydet"]');
+        if (saveBtn && !saveBtn.hasAttribute('data-hooked')) {
+            saveBtn.addEventListener('click', () => {
+                setTimeout(triggerListRefresh, 2000);
+            });
+            saveBtn.setAttribute('data-hooked', 'true');
+        }
+    }
+
+    // Safety Delay
+    if (document.readyState === 'complete') init();
+    else window.addEventListener('load', init);
+
+})();
