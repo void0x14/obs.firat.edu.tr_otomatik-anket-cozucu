@@ -350,10 +350,40 @@
 
         Object.keys(groupedRadios).forEach(name => {
             const group = groupedRadios[name];
-            let targetRadio = group.find(r => r.value === scoreValue) ||
-                group.find(r => r.value === scoreValue.toString()) ||
-                (group.length >= parseInt(scoreValue) ? group[parseInt(scoreValue) - 1] : null) ||
-                group[group.length - 1];
+
+            // Radio button değerlerini logla (debug için)
+            const values = group.map(r => r.value);
+            DebugLog.info(`Radio grup [${name}] değerleri: ${values.join(', ')}`);
+
+            // Öncelik sırası:
+            // 1. Tam değer eşleşmesi (örn: "5" == "5")
+            // 2. Sayısal karşılaştırma ile en yakın değer
+            // 3. Son seçenek (fallback)
+
+            let targetRadio = null;
+
+            // Yöntem 1: Tam değer eşleşmesi
+            targetRadio = group.find(r => r.value === scoreValue) ||
+                group.find(r => r.value === scoreValue.toString());
+
+            // Yöntem 2: Sayısal olarak en yakın değeri bul
+            if (!targetRadio) {
+                const numericScore = parseInt(scoreValue);
+                const sortedByValue = [...group].sort((a, b) => {
+                    const aVal = parseInt(a.value) || 0;
+                    const bVal = parseInt(b.value) || 0;
+                    return Math.abs(aVal - numericScore) - Math.abs(bVal - numericScore);
+                });
+                if (sortedByValue.length > 0) {
+                    targetRadio = sortedByValue[0];
+                    DebugLog.info(`En yakın değer seçildi: ${targetRadio.value} (hedef: ${scoreValue})`);
+                }
+            }
+
+            // Yöntem 3: Fallback - son radio
+            if (!targetRadio) {
+                targetRadio = group[group.length - 1];
+            }
 
             if (targetRadio && !targetRadio.checked) {
                 targetRadio.checked = true;
@@ -361,6 +391,7 @@
                 targetRadio.dispatchEvent(new Event('change', { bubbles: true }));
                 filledCount++;
                 group.forEach(r => r.setAttribute(CONFIG.unfilledAttr, 'true'));
+                DebugLog.info(`✓ Radio seçildi [${name}]: değer=${targetRadio.value}`);
             }
         });
 
