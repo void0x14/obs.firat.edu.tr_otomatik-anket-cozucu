@@ -1,46 +1,33 @@
 # Active Context
 
-## Current Situation (v3.0 - 2026-01-20)
-Extension tamamen yeniden yazıldı. CSP bypass, state machine navigasyon ve TAM OTOMASYON eklendi.
+## Güncel Durum (v3.2.2 - RECOVERY SUCCESSFUL)
+**Tarih:** 2026-01-26
+**Durum:** STABLE (Kod temizlendi ve dinamik hale getirildi)
 
-## v3.0 Değişiklikleri ✅
-✅ **Main World Bridge**: `injected.js` ile CSP bypass - `__doPostBack` çağrıları artık çalışıyor
-✅ **State Machine Navigation**: MAIN_PAGE -> GRADE_LIST -> SURVEY_FORM otomatik geçiş
-✅ **TAM OTOMASYON**: KAYDET butonuna da OTOMATİK basılıyor
-✅ **Debug Log Sistemi**: `chrome.storage.local` ile log toplama, popup'tan indirme
-✅ **PostBack Parser**: `javascript:__doPostBack(...)` linkleri parse edilip Main World'de çalıştırılıyor
+## YAPILAN DÜZELTMELER (v3.2.2)
 
-## Dosya Yapısı
-```
-/
-├── manifest.json (v3.0 - scripting permission, web_accessible_resources)
-├── content_script.js (State machine, CSP bypass bridge, auto-fill, AUTO-SAVE)
-├── injected.js (Main World script - __doPostBack çağrıları)
-├── popup.html/js (Debug log download/clear butonları)
-└── .gitignore (*.log patterns)
-```
+### 1. Hardcoded URL'lerin Kaldırılması
+`window.location.href = 'not_listesi.aspx'` gibi tahminlere dayalı tüm yönlendirmeler kaldırıldı. Artık navigasyon sadece ekrandaki DOM elemanlarına (menü linkleri, butonlar) tıklanarak yapılıyor. Eğer link bulunamazsa hata logu basılıyor ancak sistem yanlış yere yönlendirilmiyor.
 
-## Otomasyon Akışı
-1. Extension OBS sayfasında aktif olur
-2. State tespit edilir (MAIN_PAGE, GRADE_LIST, SURVEY_FORM)
-3. MAIN_PAGE ise -> "Not Listesi"ne navigasyon
-4. GRADE_LIST ise -> "Zorunlu Anket" linklerini bul ve ilkine tıkla
-5. SURVEY_FORM ise -> Formu doldur
-6. **KAYDET butonuna OTOMATİK bas**
-7. Sayfa yenile ve tekrar 4-6 adımlarını tekrarla
-8. Tüm anketler bitene kadar devam et
+### 2. Gelişmiş State Machine
+`detectCurrentState` fonksiyonu daha robust hale getirildi:
+- Sadece URL'e değil, sayfa içeriğindeki anahtar kelimelere ve form elementlerine bakarak durum tespiti yapıyor.
+- "Not Listesi" sayfasını tespit etmek için tablo yapılarını (`ders kodu`, `notu` vb.) kontrol ediyor.
+- Anket formlarını tespit etmek için radio button ve select sayısını kontrol ediyor.
 
-## Test Adımları
-1. `chrome://extensions` -> Reload
-2. OBS'e giriş yap
-3. Extension otomatik olarak:
-   - Not Listesi'ne gidecek
-   - Zorunlu Anket'e tıklayacak
-   - Formu dolduracak
-   - KAYDET'e basacak
-   - Sonraki ankete geçecek
-4. Tüm anketler bitene kadar devam edecek
+### 3. Dinamik Menü Navigasyonu
+`navigateToGradeList` artık önce doğrudan linki arıyor, bulamazsa üst menüleri (Ders ve Dönem İşlemleri) açıp tekrar aramaya başlıyor. Bu sayede menü yapısı değişse bile sistem çalışmaya devam edebiliyor.
 
-## Bilinen Sınırlamalar
-- OBS JavaScript navigasyonu karmaşık, bazı sayfalar farklı davranabilir
-- Cross-origin iframe kısıtlamaları hala geçerli
+### 4. AKTS ve İş Yükü Desteği
+Anketlerdeki sayısal girdi gerektiren (Örn: "Bu ders için haftada kaç saat çalıştınız?") alanlar için otomatik sayı tespiti ve doldurma mantığı eklendi.
+
+### 5. Bridge ve PostBack İyileştirmeleri
+`injected.js` içindeki PostBack mekanizması, `WebForm_PostBackOptions` kontrolü ile daha güvenli hale getirildi. Click simülasyonu iyileştirildi.
+
+## KRİTİK UYARILAR
+- Sistem şu an tamamen DOM tabanlıdır. Eğer OBS arayüzünde çok köklü bir HTML değişikliği olursa seçicilerin (selectors) güncellenmesi gerekebilir.
+- Iframe'ler arası iletişim PostMessage üzerinden sağlıklı bir şekilde yürütülmektedir.
+
+## GELECEK ADIMLAR
+- Kullanıcı arayüzüne "Otomasyonu Durdur" butonu eklenebilir.
+- Farklı tarayıcılarda (Edge, Firefox) testler yapılabilir.

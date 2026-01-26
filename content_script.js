@@ -1,5 +1,5 @@
 /**
- * OBS ANKET OTOMASYONU v3.2.1 - DYNAMIC NAVIGATION FIX
+ * OBS ANKET OTOMASYONU v3.2.2 - DYNAMIC NAVIGATION FIX
  * 
  * Mimari:
  * 1. Content Script (Isolated World) - Element tespiti ve UI
@@ -73,21 +73,6 @@
         });
     }
 
-    function triggerPostBack(eventTarget, eventArgument) {
-        return new Promise((resolve, reject) => {
-            const handler = (event) => {
-                if (event.data && event.data.type === 'OBS_POSTBACK_RESPONSE') {
-                    window.removeEventListener('message', handler);
-                    if (event.data.success) resolve(event.data);
-                    else reject(new Error(event.data.error));
-                }
-            };
-            window.addEventListener('message', handler);
-            window.postMessage({ type: 'OBS_POSTBACK_REQUEST', eventTarget, eventArgument }, '*');
-            setTimeout(() => { window.removeEventListener('message', handler); reject(new Error('Timeout')); }, 5000);
-        });
-    }
-
     async function clickElementSafely(element) {
         if (!element) return;
         const bridgeId = 'obs-' + Math.random().toString(36).substr(2, 9);
@@ -123,28 +108,42 @@
     };
 
     function detectCurrentState() {
-        const url = window.location.href.toLowerCase();
         const bodyText = (document.body.innerText || '').toLowerCase();
 
+        // 1. Success Message (En yüksek öncelik)
         if (bodyText.includes('başarıyla kaydedildi') || bodyText.includes('işlem başarılı') || bodyText.includes('tamamlanmıştır')) {
             return NavigationState.SUCCESS;
         }
 
+        // 2. Survey Form (Anket form elementleri varsa)
         const hasRadios = document.querySelectorAll('input[type="radio"]').length > 0;
         const hasFormSelects = document.querySelectorAll('select').length > 3;
-
-        if (hasRadios || hasFormSelects) {
-            if (bodyText.includes('kesinlikle') || bodyText.includes('katılıyorum') || bodyText.includes('dersin') || bodyText.includes('öğretim')) {
-                return NavigationState.SURVEY_FORM;
-            }
+        const hasAnketTitle = bodyText.includes('anket') && (bodyText.includes('doldur') || bodyText.includes('formu'));
+        
+        if (hasRadios || (hasFormSelects && hasAnketTitle)) {
+            return NavigationState.SURVEY_FORM;
         }
 
+        // 3. Grade List (Not Listesi / Zorunlu Anket Linkleri)
         const zorunluLinks = findZorunluAnketLinks();
-        if (zorunluLinks.length > 0 || url.includes('not_listesi')) {
+        if (zorunluLinks.length > 0) {
+            return NavigationState.GRADE_LIST;
+        }
+        
+        // Eğer sayfada "Ders Kodu", "Ders Adı", "Vize" gibi tablolar varsa ama anket linki yoksa 
+        // muhtemelen tüm anketler bitmiştir veya not listesi sayfasındayızdır.
+        const isGradeTable = bodyText.includes('ders kodu') && bodyText.includes('notu');
+        if (isGradeTable) {
             return NavigationState.GRADE_LIST;
         }
 
-        if (url.includes('index.aspx') || url.includes('duyuru')) {
+        // 4. Main Page (Ana Sayfa / Menü Frame)
+        const hasMenuLink = Array.from(document.querySelectorAll('a, span, div, li')).some(el => {
+            const txt = (el.innerText || '').toLowerCase().trim();
+            return txt === 'not listesi' || txt === 'not listem' || (txt.includes('not') && txt.includes('listesi'));
+        });
+
+        if (hasMenuLink || bodyText.includes('öğrenci bilgi sistemi')) {
             return NavigationState.MAIN_PAGE;
         }
 
@@ -152,23 +151,37 @@
     }
 
     function findZorunluAnketLinks() {
-        return Array.from(document.querySelectorAll('a')).filter(link => {
-            const text = (link.innerText || '').trim().toLowerCase();
-            return (text.includes('zorunlu') && text.includes('anket')) || text === 'zorunlu anket';
-        }).filter(link => link.offsetParent !== null && !link.hasAttribute(CONFIG.unfilledAttr));
+        const selectors = ['a', 'span', 'div', 'td', 'input[type="button"]'];
+        const elements = [];
+        selectors.forEach(s => elements.push(...Array.from(document.querySelectorAll(s))));
+        
+        return elements.filter(el => {
+            const text = (el.innerText || el.value || '').trim().toLowerCase();
+            const hasAnketText = (text.includes('anket') && (text.includes('zorunlu') || text.includes('doldur') || text.includes('formu'))) || 
+                                (text.includes('ders') && text.includes('değerlendirme'));
+            const isVisible = el.offsetParent !== null;
+            const notProcessed = !el.hasAttribute(CONFIG.unfilledAttr);
+            
+            // Link veya tıklanabilir element kontrolü
+            const isClickable = el.tagName === 'A' || el.hasAttribute('onclick') || 
+                               el.getAttribute('href')?.startsWith('javascript:') ||
+                               window.getComputedStyle(el).cursor === 'pointer';
+            
+            return hasAnketText && isVisible && notProcessed && isClickable;
+        });
     }
 
     async function navigateToGradeList() {
         DebugLog.info('Not Listesi sayfasına gidiliyor...');
         showOverlay('Not Listesi sayfasına gidiliyor...');
 
-        // DYNAMICALY FIND THE MENU ITEM
-        const allElements = Array.from(document.querySelectorAll('a, span, div, li, [onclick]'));
-
         // 1. Doğrudan "Not Listesi" linkini ara
+        const allElements = Array.from(document.querySelectorAll('a, span, div, li, [onclick]'));
         const target = allElements.find(el => {
-            const txt = (el.innerText || el.textContent || '').toLowerCase();
-            return txt.includes('not listesi') || txt.includes('not listem') || txt === 'not listesi';
+            const txt = (el.innerText || el.textContent || '').toLowerCase().trim();
+            const isMatch = txt === 'not listesi' || txt === 'not listem' || (txt.includes('not') && txt.includes('listesi'));
+            const isVisible = el.offsetParent !== null;
+            return isMatch && isVisible;
         });
 
         if (target) {
@@ -177,21 +190,21 @@
             return true;
         }
 
-        // 2. Eğer bulunamadıysa "Ders ve Dönem İşlemleri" menüsünü bulmayı dene
+        // 2. Eğer bulunamadıysa "Ders ve Dönem İşlemleri" menüsünü bulmayı dene (Kapalı olabilir)
         const menuDers = allElements.find(el => {
             const txt = (el.innerText || el.textContent || '').toLowerCase();
-            return txt.includes('ders') && txt.includes('dönem');
+            return txt.includes('ders') && txt.includes('dönem') && el.offsetParent !== null;
         });
 
         if (menuDers) {
-            DebugLog.info('Menü açılıyor (Ders ve Dönem)');
+            DebugLog.info('Ana menü öğesi bulundu, açılıyor...');
             await clickElementSafely(menuDers);
-            setTimeout(navigateToGradeList, 1000);
+            // Menü açıldıktan kısa süre sonra tekrar dene
+            setTimeout(navigateToGradeList, 1500);
             return true;
         }
 
-        DebugLog.warn('Navigasyon hedefi bulunamadı, ana sayfaya dönülüyor.');
-        window.location.href = 'index.aspx';
+        DebugLog.warn('Not Listesi linki bu frame içinde bulunamadı.');
         return false;
     }
 
@@ -219,11 +232,11 @@
         names.forEach(name => {
             const group = Array.from(document.querySelectorAll(`input[name="${name}"]`));
             const scoreMap = {
-                "5": { pos: ["kesinlikle katılıyorum", "çok iyi", "tamamen"], neg: ["katılmıyorum", "zayıf"] },
-                "4": { pos: ["katılıyorum", "iyi"], neg: ["katılmıyorum", "zayıf", "kesinlikle"] },
-                "3": { pos: ["kararsızım", "orta"], neg: [] },
-                "2": { pos: ["katılmıyorum", "zayıf"], neg: ["kesinlikle", "iyi", "çok"] },
-                "1": { pos: ["kesinlikle katılmıyorum", "çok zayıf"], neg: [" katılıyorum", " iyi"] }
+                "5": { pos: ["kesinlikle katılıyorum", "çok iyi", "tamamen", "çok yeterli", "her zaman"], neg: ["katılmıyorum", "zayıf", "yetersiz"] },
+                "4": { pos: ["katılıyorum", "iyi", "yeterli", "genellikle"], neg: ["katılmıyorum", "zayıf", "kesinlikle"] },
+                "3": { pos: ["kararsızım", "orta", "kısmen"], neg: [] },
+                "2": { pos: ["katılmıyorum", "zayıf", "yetersiz", "nadiren"], neg: ["kesinlikle", "iyi", "çok"] },
+                "1": { pos: ["kesinlikle katılmıyorum", "çok zayıf", "hiçbir zaman"], neg: [" katılıyorum", " iyi"] }
             };
             const config = scoreMap[scoreValue] || { pos: [scoreValue], neg: [] };
 
@@ -235,7 +248,11 @@
             });
 
             if (!target) target = group.find(r => r.value === scoreValue);
-            if (!target) target = group[group.length - (6 - parseInt(scoreValue))] || group[0];
+            if (!target) {
+                // Eğer metin eşleşmesi yoksa, radio button sırasına göre seç (5 -> sonuncu, 1 -> ilk gibi)
+                const index = Math.min(parseInt(scoreValue) - 1, group.length - 1);
+                target = group[index];
+            }
 
             if (target) {
                 const label = document.querySelector(`label[for="${target.id}"]`);
@@ -249,7 +266,8 @@
 
         // Selects
         document.querySelectorAll(`select:not([${CONFIG.unfilledAttr}])`).forEach(s => {
-            const opts = Array.from(s.options);
+            if (s.offsetParent === null) return;
+            const opts = Array.from(s.options).filter(o => o.value && o.value !== "0");
             const target = opts.find(o => o.value === scoreValue) || opts[opts.length - 1];
             if (target) {
                 s.value = target.value;
@@ -264,12 +282,15 @@
         inputs.forEach(input => {
             if (input.offsetParent === null) return;
             let val = scoreValue;
-            const row = input.closest('tr');
-            if (row) {
-                const numbers = (row.innerText || "").match(/(\d+)/g);
-                if (numbers) val = numbers[numbers.length - 1];
+            
+            // Eğer bir sayı isteniyorsa (İş yükü tablosu gibi)
+            const rowText = (input.closest('tr')?.innerText || "").toLowerCase();
+            if (rowText.includes('saat') || rowText.includes('gün') || input.type === 'number') {
+                const match = rowText.match(/(\d+)/g);
+                val = match ? match[match.length - 1] : "2"; // Default 2 saat
+            } else if (input.tagName === 'TEXTAREA') {
+                val = "Ders içeriği ve işleyişi oldukça verimliydi. Teşekkürler.";
             }
-            if (input.tagName === 'TEXTAREA') val = "Ders içeriği ve işleyişi oldukça verimliydi. Teşekkürler.";
 
             input.focus();
             input.value = val;
@@ -279,10 +300,11 @@
         });
 
         if (filledCount > 0) {
-            showOverlay(`${filledCount} alan dolduruldu. Kaydediliyor...`);
-            setTimeout(autoClickSaveButton, 2000);
+            showOverlay(`${filledCount} alan dolduruldu. Kaydet butonuna basılıyor...`);
+            setTimeout(autoClickSaveButton, 2500);
         } else {
-            setTimeout(navigateToGradeList, 1500);
+            // Hiç alan bulunamadıysa bir şeyler ters gitmiş olabilir veya sayfa henüz yüklenmemiştir
+            DebugLog.warn('Doldurulacak alan bulunamadı.');
         }
     }
 
@@ -290,34 +312,68 @@
         const btn = Array.from(document.querySelectorAll('input[type="submit"], input[type="button"], button, a'))
             .find(b => {
                 const txt = (b.value || b.innerText || '').toLowerCase();
-                return (txt.includes("kaydet") || txt.includes("gönder") || txt.includes("onayla")) && b.offsetParent !== null;
+                const isSave = txt.includes("kaydet") || txt.includes("gönder") || txt.includes("onayla") || txt.includes("tamamla");
+                return isSave && b.offsetParent !== null;
             });
 
         if (btn) {
+            DebugLog.info('Kaydet butonu bulundu, tıklanıyor.');
             await clickElementSafely(btn);
             showOverlay('Kaydediliyor...');
-            // Fallback
-            setTimeout(() => navigateToGradeList(), 6000);
         } else {
-            navigateToGradeList();
+            DebugLog.warn('Kaydet butonu bulunamadı!');
         }
     }
 
     async function handleSuccessAction() {
-        showOverlay('İşlem başarılı! Geri dönülüyor...');
-        setTimeout(() => navigateToGradeList(), 1500);
+        showOverlay('İşlem başarılı! Bir sonraki adıma geçiliyor...');
+        // Başarı durumunda sayfayı yenilemek yerine biraz bekleyip durumu tekrar kontrol etmek daha güvenli olabilir
+        // veya üst frame'in menüyü tetiklemesini bekleyebiliriz.
+        setTimeout(() => {
+            const state = detectCurrentState();
+            if (state === NavigationState.SUCCESS) {
+                // Eğer hala başarı sayfasındaysak, kullanıcıyı Grade List'e geri döndürmek için 
+                // sayfadaki "Geri" veya "Kapat" butonlarını arayabiliriz.
+                const backBtn = Array.from(document.querySelectorAll('a, button, input'))
+                    .find(el => {
+                        const t = (el.innerText || el.value || "").toLowerCase();
+                        return t.includes('geri') || t.includes('kapat') || t.includes('list');
+                    });
+                if (backBtn) clickElementSafely(backBtn);
+            }
+        }, 2000);
     }
 
     // ==================== RUNNER ====================
     async function runStateMachine(userScore) {
         const state = detectCurrentState();
+        DebugLog.info(`Current State: ${state}`);
+
         switch (state) {
-            case NavigationState.SUCCESS: await handleSuccessAction(); break;
-            case NavigationState.MAIN_PAGE: await navigateToGradeList(); break;
-            case NavigationState.GRADE_LIST: await clickFirstZorunluAnket(); break;
-            case NavigationState.SURVEY_FORM: fillSurveyForm(userScore); break;
-            default: setTimeout(() => runStateMachine(userScore), 3000);
+            case NavigationState.SUCCESS: 
+                await handleSuccessAction(); 
+                break;
+            case NavigationState.MAIN_PAGE: 
+                await navigateToGradeList(); 
+                break;
+            case NavigationState.GRADE_LIST: 
+                const linkClicked = await clickFirstZorunluAnket(); 
+                if (!linkClicked) {
+                    // Eğer link bulunamadıysa ama bu frame'de menü varsa oraya bak
+                    await navigateToGradeList();
+                }
+                break;
+            case NavigationState.SURVEY_FORM: 
+                fillSurveyForm(userScore); 
+                break;
+            default: 
+                // Unknown state ise bekle ve tekrar dene
+                setTimeout(() => runStateMachine(userScore), CONFIG.retryDelay);
+                return;
         }
+        
+        // Döngüyü devam ettir
+        setTimeout(() => runStateMachine(userScore), 4000);
     }
 
     async function init() {

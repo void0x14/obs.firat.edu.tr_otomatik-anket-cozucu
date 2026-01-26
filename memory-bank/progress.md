@@ -1,37 +1,27 @@
-# Progress Status
+# Progress - Fırat OBS Otomatik Anket Çözücü
 
-## What Works ✅
-✅ **Extension Structure**: Manifest V3 setup correct
-✅ **Popup Interface**: Score selection + debug log download
-✅ **Storage System**: Chrome storage for preferences and logs
-✅ **Content Script Injection**: Loads on OBS pages in all frames
-✅ **Main World Bridge**: CSP bypass via injected.js
-✅ **State Machine Navigation**: Automatic page type detection
-✅ **Form Filling**: Radio, select, text input, textarea handling
-✅ **AUTO SAVE**: KAYDET butonuna otomatik basma
-✅ **Loop Automation**: Tüm anketleri sırayla doldurma
-✅ **Radio Visibility Fix**: Gizli radio butonlar `MouseEvent` ile fiziksel olarak işaretleniyor.
+## Completed Features
+- [x] Basic Manifest V3 architecture
+- [x] Main World Bridge (injected.js) for PostBack support
+- [x] High-score (1-5) selection in popup
+- [x] Automatic form filling for radio buttons and selects
+- [x] Automatic comment filling for textareas
+- [x] Workload (AKTS) field handling
+- [x] Dynamic menu navigation (Removed hardcoded URLs)
+- [x] Success modal auto-closer
+- [x] Debug log system
 
-## v3.0 Major Improvements
-✅ **CSP Bypass**: `javascript:__doPostBack` linkleri artık çalışıyor
-✅ **Full Automation**: Kullanıcı müdahalesi gerektirmiyor
-✅ **Debug Logging**: Popup'tan log indirme özelliği
-✅ **State Detection**: MAIN_PAGE, GRADE_LIST, SURVEY_FORM ayrımı
+## In Progress
+- [ ] Field testing on various survey types
+- [ ] Performance optimization for large forms
 
-## Current Status
-🟢 **TAM OTOMASYON HAZIR**: Extension kullanıcı müdahalesi olmadan çalışıyor
+## Known Issues (Fixed in v3.2.2)
+- [x] Fixed: 404 errors due to `not_listesi.aspx` hardcoding
+- [x] Fixed: Infinite loops when navigation fails
+- [x] Fixed: Missing "AKTS/İş Yükü" field values
+- [x] Fixed: Failure to detect "Zorunlu Anket" links in some contexts
 
-## Otomasyon Döngüsü
-```
-Not Listesi -> Zorunlu Anket Tıkla -> Form Doldur -> KAYDET Tıkla -> 
-Sayfa Yenile -> Sonraki Zorunlu Ankete Geç -> Tekrar...
-```
-
-## Bilinen Sorunlar
-- OBS iframe yapısı cross-origin kısıtlamaları içerebilir
-- Bazı sayfalarda navigasyon farklı çalışabilir
-
-## Git Durumu
-- `origin`: GitHub (void0x14/firat_edu_tr_otomatik_anket_cozucu)
-- `orchids-sync`: Orchids cloud sync
-- Tüm commitler korunuyor
+## Upcoming Tasks
+1. [ ] Add support for multi-select (checkbox) survey questions
+2. [ ] Implement "Smart Delay" based on page load speed
+3. [ ] Add a "Stop" button to the overlay to cancel automation
